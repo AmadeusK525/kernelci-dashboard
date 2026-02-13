@@ -9,8 +9,6 @@ x-backend-common: &backend-common
         - ../spool:/app/spool  # Directory for ingester to monitor
     env_file:
         - .env.backend
-    secrets:
-        - postgres_password_secret
     networks:
         - private
         - public
@@ -25,17 +23,31 @@ networks:
     public:
     private:
 
-secrets:
-    postgres_password_secret:
-        file: ./backend/runtime/secrets/postgres_password_secret
-
 services:
     backend:
-        <<: *backend-common
         container_name: dashboard_backend_service
+        build:
+            context: ./backend
+        volumes:
+            - backend-data:${BACKEND_VOLUME_DIR:-/volume_data}
+        env_file:
+            - .env.backend
+        networks:
+            - private
+            - public
         restart: always
         environment:
             - CONTAINER_MODE=backend
+        command:
+            - poetry
+            - run
+            - gunicorn
+            - kernelCI.wsgi:application
+            - --workers=5
+            - --forwarded-allow-ips=*
+            - --bind=0.0.0.0:8000
+            - --timeout=250
+        entrypoint: "./utils/docker/backend_entrypoint.sh"
         depends_on:
             - redis
             - dashboard_db
@@ -50,11 +62,18 @@ services:
               mode: host
 
     ingester:
-        <<: *backend-common
         container_name: dashboard_ingester_service
+        build:
+            context: ./backend
+        volumes:
+            - backend-data:${BACKEND_VOLUME_DIR:-/volume_data} # Directory of the tree names file and other data
+            - ${INGESTER_SPOOL_DIR}:/app/spool                 # Directory for ingester to monitor
+        env_file:
+            - .env.ingester
+        networks:
+            - private
+            - public
         environment:
-            - CONTAINER_MODE=command
-            # Pass down the variable from .env to inside the container
             - INGESTER_METRICS_PORT=${INGESTER_METRICS_PORT:-8002}
         command:
             - poetry
@@ -72,13 +91,16 @@ services:
               published: ${INGESTER_METRICS_PORT:-8002}
               protocol: tcp
               mode: host
-        profiles: ["with_commands"]
     
     pending_aggregations_processor:
-        <<: *backend-common
         container_name: pending_aggregations_processor_service
-        environment:
-            - CONTAINER_MODE=command
+        build:
+            context: ./backend
+        env_file:
+            - .env.pending_aggregations
+        networks:
+            - private
+            - public
         command:
             - poetry
             - run
@@ -91,7 +113,6 @@ services:
         restart: always
         depends_on:
             - dashboard_db
-        profiles: ["with_commands"]
 
     dashboard_db:
         image: postgres:17
